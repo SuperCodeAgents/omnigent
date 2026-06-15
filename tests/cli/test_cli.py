@@ -2260,6 +2260,7 @@ def test_run_with_agent_still_dispatches_existing_path(monkeypatch: pytest.Monke
         ],
         # Interactive ``run`` (no -p) defaults the browser-open ON.
         auto_open_conversation=True,
+        project_label=None,
     )
 
 
@@ -2305,6 +2306,7 @@ def test_run_resume_picker_forwards_to_run_chat(monkeypatch: pytest.MonkeyPatch)
         ],
         # Interactive ``run`` (no -p) defaults the browser-open ON.
         auto_open_conversation=True,
+        project_label=None,
     )
 
 
@@ -2347,6 +2349,7 @@ def test_run_resume_with_conversation_id_forwards_to_run_chat(
         resume_parts=["cli", "run", "examples/hello_world.yaml", "--log"],
         # Interactive ``run`` (no -p) defaults the browser-open ON.
         auto_open_conversation=True,
+        project_label=None,
     )
 
 
@@ -2430,6 +2433,7 @@ def test_resume_flags_with_prompt_dispatch_to_session_path(
         resume_picker=True,
         debug_events=False,
         auto_open_conversation=False,
+        project_label=None,
     )
 
 
@@ -2472,6 +2476,7 @@ def test_run_with_agent_prompt_dispatches_headlessly(monkeypatch: pytest.MonkeyP
         ephemeral=False,
         debug_events=False,
         auto_open_conversation=False,
+        project_label=None,
     )
 
 
@@ -2523,6 +2528,7 @@ def test_run_server_without_agent_dispatches_direct_server(
         # Interactive ``run --server`` (no -p) defaults the browser-open ON,
         # including for remote servers.
         auto_open_conversation=True,
+        project_label=None,
     )
 
 

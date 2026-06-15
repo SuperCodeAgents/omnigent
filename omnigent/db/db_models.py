@@ -780,3 +780,42 @@ class SqlUserDailyCost(Base):
     cost_usd: Mapped[float] = mapped_column(Float, nullable=False)
     ask_approved_usd: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
     updated_at: Mapped[int] = mapped_column(Integer)
+
+
+class SqlProject(Base):
+    """
+    SQLAlchemy model for the ``projects`` table.
+
+    A per-user named project pinning a default workspace and default
+    agent/harness/model for new sessions. ``owner`` is a plain user-id
+    string (the reserved ``"local"`` in single-user mode), mirroring
+    ``hosts.owner`` rather than a foreign key, so a project can be stored
+    before any ``users`` row exists. Unique on ``(owner, name)``.
+
+    :param id: Unique project id, e.g. ``"proj_abc123"``.
+    :param owner: Owning user id, e.g. ``"alice@example.com"`` or ``"local"``.
+    :param name: Project name, unique per owner, e.g. ``"waypoint-api"``.
+    :param workspace: Absolute path to the project's working directory.
+    :param agent: Default agent target (path or name), nullable.
+    :param harness: Default harness id, nullable.
+    :param model: Default model id, nullable.
+    :param created_at: Unix epoch seconds of creation.
+    :param updated_at: Unix epoch seconds of the last update, nullable.
+    """
+
+    __tablename__ = "projects"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(256), nullable=False)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    workspace: Mapped[str] = mapped_column(String(2048), nullable=False)
+    agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    harness: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("owner", "name", name="uq_projects_owner_name"),
+        Index("ix_projects_owner", "owner"),
+    )

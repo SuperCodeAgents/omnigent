@@ -47,6 +47,70 @@ class PaginatedList(BaseModel):
     has_more: bool = False
 
 
+# ── Projects ────────────────────────────────────────────────────
+
+# Project names appear in URL paths (``/v1/projects/{name}``) and group
+# sessions, so keep them short and to a safe, path-friendly charset:
+# start alphanumeric, then letters/digits/``-``/``_``/``.``.
+_PROJECT_NAME_RE = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+
+
+class ProjectObject(BaseModel):
+    """
+    API representation of a user-defined project.
+
+    :param id: Unique project id, e.g. ``"proj_abc123"``.
+    :param object: Fixed resource type, always ``"project"``.
+    :param name: Project name, unique per owner, e.g. ``"waypoint-api"``.
+    :param workspace: Absolute path to the project's working directory.
+    :param agent: Default agent target (path or name), or ``None``.
+    :param harness: Default harness id, e.g. ``"codex"``, or ``None``.
+    :param model: Default model id, or ``None``.
+    :param created_at: Unix epoch seconds of creation.
+    :param updated_at: Unix epoch seconds of the last update, or ``None``.
+    """
+
+    id: str
+    object: str = "project"
+    name: str
+    workspace: str
+    agent: str | None = None
+    harness: str | None = None
+    model: str | None = None
+    created_at: int
+    updated_at: int | None = None
+
+
+class ProjectCreateRequest(BaseModel):
+    """
+    Request body for ``POST /v1/projects`` (create or update by name).
+
+    :param name: Project name, 1–64 chars, path-friendly charset.
+    :param workspace: Absolute path to the project's working directory.
+    :param agent: Optional default agent target.
+    :param harness: Optional default harness id.
+    :param model: Optional default model id.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=64)
+    workspace: str = Field(min_length=1, max_length=2048)
+    agent: str | None = Field(default=None, max_length=512)
+    harness: str | None = Field(default=None, max_length=64)
+    model: str | None = Field(default=None, max_length=128)
+
+    @model_validator(mode="after")
+    def _validate_name(self) -> ProjectCreateRequest:
+        """Reject names with characters that aren't path/URL friendly."""
+        if not re.fullmatch(_PROJECT_NAME_RE, self.name):
+            raise ValueError(
+                "name must start with a letter or digit and contain only "
+                "letters, digits, '-', '_', or '.' (e.g. 'waypoint-api')"
+            )
+        return self
+
+
 # ── Agents ──────────────────────────────────────────────────────
 
 

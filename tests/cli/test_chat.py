@@ -1223,9 +1223,20 @@ class _FakeSessionsApi:
     def __init__(self, captured: dict[str, object]) -> None:
         self._captured = captured
 
-    async def create(self, bundle: bytes, *, filename: str, workspace: str) -> SimpleNamespace:
+    async def create(
+        self,
+        bundle: bytes,
+        *,
+        filename: str,
+        workspace: str,
+        labels: dict[str, str] | None = None,
+    ) -> SimpleNamespace:
         """Record a session create and return a stub with a new id."""
-        self._captured["create"] = {"workspace": workspace, "filename": filename}
+        self._captured["create"] = {
+            "workspace": workspace,
+            "filename": filename,
+            "labels": labels,
+        }
         return SimpleNamespace(id="conv_created")
 
     async def fork(self, session_id: str) -> dict[str, str]:
@@ -1312,6 +1323,36 @@ def test_prepare_chat_session_via_daemon_creates_fresh_and_launches(
         "session_id": "conv_created",
         "workspace": "/tmp/proj",
     }
+    # No project → no label stamped on the create.
+    create = captured["create"]
+    assert isinstance(create, dict)
+    assert create["labels"] is None
+
+
+def test_prepare_chat_session_via_daemon_tags_project_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A project_label is forwarded as a ``project`` label on a fresh create."""
+    captured: dict[str, object] = {}
+    _patch_daemon_launch(monkeypatch, captured)
+
+    asyncio.run(
+        _prepare_chat_session_via_daemon(
+            base_url="https://example.databricksapps.com",
+            headers={},
+            auth=None,
+            host_id="host_x",
+            bundle=b"bundle-bytes",
+            resume_conversation_id=None,
+            fork_session_id=None,
+            workspace="/tmp/proj",
+            project_label="waypoint-api",
+        )
+    )
+
+    create = captured["create"]
+    assert isinstance(create, dict)
+    assert create["labels"] == {"project": "waypoint-api"}
 
 
 def test_prepare_chat_session_via_daemon_resume_skips_create(
@@ -3170,7 +3211,14 @@ class _FakeSessionsNamespace:
         self._forbid_list_items = list_items_must_not_be_called
         self.list_items_calls = 0
 
-    async def create(self, bundle: bytes, *, filename: str, workspace: str) -> SimpleNamespace:
+    async def create(
+        self,
+        bundle: bytes,
+        *,
+        filename: str,
+        workspace: str,
+        labels: dict[str, str] | None = None,
+    ) -> SimpleNamespace:
         """Pretend to create a session; return an object with an ``id``."""
         return SimpleNamespace(id="conv_test")
 

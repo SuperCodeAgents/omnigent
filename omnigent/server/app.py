@@ -41,6 +41,7 @@ from omnigent.server.routes.builtin_agents import create_builtin_agents_router
 from omnigent.server.routes.comments import create_comments_router
 from omnigent.server.routes.default_policies import create_default_policies_router
 from omnigent.server.routes.policy_registry import create_policy_registry_router
+from omnigent.server.routes.projects import create_projects_router
 from omnigent.server.routes.runner_tunnel import create_runner_tunnel_router
 from omnigent.server.routes.session_policies import create_session_policies_router
 from omnigent.server.routes.sessions import (
@@ -61,6 +62,7 @@ from omnigent.stores.conversation_store import SessionConnectivity
 from omnigent.stores.host_store import HostStore
 from omnigent.stores.permission_store import PermissionStore
 from omnigent.stores.policy_store import PolicyStore
+from omnigent.stores.project_store import ProjectStore
 
 _logger = logging.getLogger(__name__)
 _WEB_UI_DIST = Path(__file__).parent / "static" / "web-ui"
@@ -631,6 +633,7 @@ def create_app(
     permission_store: PermissionStore | None = None,
     auth_provider: AuthProvider | None = None,
     host_store: HostStore | None = None,
+    project_store: ProjectStore | None = None,
     account_store: Any | None = None,  # SqlAlchemyAccountStore — accounts mode only
     extra_routers: list[tuple[Any, str, list[str]]] | None = None,
     policy_modules: list[str] | None = None,
@@ -674,6 +677,8 @@ def create_app(
     :param host_store: Store for host registrations. ``None``
         disables host connectivity features (list hosts, launch
         runners on remote hosts).
+    :param project_store: Store for per-user projects. ``None``
+        disables the ``/v1/projects`` routes.
     :param policy_modules: Additional dotted module paths to
         scan for ``POLICY_REGISTRY`` lists at startup, e.g.
         ``["myorg.policies.safety"]``. Sourced from the server
@@ -1393,6 +1398,14 @@ def create_app(
         prefix="/v1",
         tags=["agents"],
     )
+    if project_store is not None:
+        # Per-user projects (a named workspace + launch defaults), so they are
+        # visible from any device connected to this server.
+        app.include_router(
+            create_projects_router(project_store, auth_provider=auth_provider),
+            prefix="/v1",
+            tags=["projects"],
+        )
     app.include_router(
         create_terminal_attach_router(
             auth_provider=auth_provider,

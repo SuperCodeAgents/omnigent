@@ -271,12 +271,16 @@ def run_chat(
     debug_events: bool = False,
     resume_parts: list[str] | None = None,
     auto_open_conversation: bool = False,
+    project_label: str | None = None,
 ) -> None:
     """
     Main entry point for ``omnigent run`` (and the ``attach`` client).
 
     :param target: Path to an agent directory/bundle, or a server URL.
     :param client_tools: Optional client-side tool set name.
+    :param project_label: Project name to tag a newly created session
+        with (the ``project`` label), or ``None``. Only applied on the
+        local daemon-backed create path.
     :param server_url: Optional server URL to use with a local
         agent path, e.g. ``"https://example.databricksapps.com"``.
         ``None`` starts a local server for path targets.
@@ -448,6 +452,7 @@ def run_chat(
             debug_events=debug_events,
             resume_parts=resume_parts,
             auto_open_conversation=auto_open_conversation,
+            project_label=project_label,
         )
 
 
@@ -1448,6 +1453,7 @@ async def _prepare_chat_session_via_daemon(
     fork_session_id: str | None,
     workspace: str,
     progress: RunnerStartupProgress | None = None,
+    project_label: str | None = None,
 ) -> _DaemonChatSession:
     """
     Create/resolve a chat session and launch a daemon-owned runner for it.
@@ -1474,6 +1480,10 @@ async def _prepare_chat_session_via_daemon(
         "Launching your agent…") as the host and runner come online, so a
         slow cold start is not silent. ``None`` (the default) runs without
         any progress updates.
+    :param project_label: When set (and this is a fresh create, not a
+        fork/resume), tag the new session with this project name via the
+        ``project`` label so it can be found from any device. ``None``
+        leaves the session untagged.
     :returns: The prepared session id + bound runner id.
     :raises click.ClickException: If session create/fork or runner launch
         fails.
@@ -1499,7 +1509,10 @@ async def _prepare_chat_session_via_daemon(
             session_id = resume_conversation_id
         else:
             created = await sdk.sessions.create(
-                bundle, filename="agent.tar.gz", workspace=workspace
+                bundle,
+                filename="agent.tar.gz",
+                workspace=workspace,
+                labels={"project": project_label} if project_label else None,
             )
             session_id = created.id
 
@@ -1544,6 +1557,7 @@ def _chat_via_daemon(
     debug_events: bool = False,
     resume_parts: list[str] | None = None,
     auto_open_conversation: bool = False,
+    project_label: str | None = None,
 ) -> None:
     """
     Run a local agent against a daemon-backed server with a daemon-owned runner.
@@ -1650,6 +1664,7 @@ def _chat_via_daemon(
                     fork_session_id=fork_session_id,
                     workspace=workspace,
                     progress=progress,
+                    project_label=project_label,
                 )
             )
 

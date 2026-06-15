@@ -1135,6 +1135,7 @@ _CLICK_SUBCOMMANDS: frozenset[str] = frozenset(
         "pane-picker",
         "pane-split",
         "polly",
+        "project",
         "resume",
         "run",
         "sandbox",
@@ -2981,8 +2982,10 @@ def server(
         )
 
     from omnigent.stores.host_store import HostStore
+    from omnigent.stores.project_store import ProjectStore
 
     host_store = HostStore(db_uri)
+    project_store = ProjectStore(db_uri)
 
     # Managed sandbox hosts (host_type="managed" sessions): parse the
     # config's `sandbox:` section up front so an operator typo stops
@@ -3046,6 +3049,7 @@ def server(
         permission_store=permission_store,
         auth_provider=auth_provider,
         host_store=host_store,
+        project_store=project_store,
         account_store=account_store,
         policy_modules=cfg.get("policy_modules"),
         admins=config_str_list(cfg.get("admins")),
@@ -4273,6 +4277,7 @@ def _dispatch_run(
     resume_parts: list[str] | None = None,
     auto_open_conversation: bool = False,
     server_from_cli: bool = False,
+    project_label: str | None = None,
 ) -> None:
     """
     Route ``omnigent run`` to the right impl.
@@ -4393,6 +4398,7 @@ def _dispatch_run(
                 debug_events=debug_events,
                 resume_parts=resume_parts,
                 auto_open_conversation=auto_open_conversation,
+                project_label=project_label,
             )
             return
         if harness is None:
@@ -4451,6 +4457,7 @@ def _dispatch_run(
                 resume_picker=resume_picker,
                 debug_events=debug_events,
                 auto_open_conversation=auto_open_conversation,
+                project_label=project_label,
             )
             return
         if log:
@@ -4478,6 +4485,7 @@ def _dispatch_run(
                 ephemeral=False,
                 debug_events=debug_events,
                 auto_open_conversation=auto_open_conversation,
+                project_label=project_label,
             )
             return
 
@@ -4513,6 +4521,7 @@ def _dispatch_run(
         debug_events=debug_events,
         resume_parts=resume_parts,
         auto_open_conversation=auto_open_conversation,
+        project_label=project_label,
     )
 
 
@@ -4720,6 +4729,15 @@ def attach(
         "(inline equivalent of `omnigent host`). Requires --server."
     ),
 )
+@click.option(
+    "--project",
+    default=None,
+    help=(
+        "Launch within a named project (see `omnigent project`): run in the "
+        "project's workspace, apply its default agent/harness/model, and tag "
+        "the session. Explicit flags override the project's defaults."
+    ),
+)
 def run(
     target: str | None,
     tools: str | None,
@@ -4735,6 +4753,7 @@ def run(
     server: str | None,
     debug_events: bool,
     register_host: bool,
+    project: str | None,
 ) -> None:
     """Start a session with an Omnigent agent.
 
@@ -4756,7 +4775,72 @@ def run(
       omnigent run examples/hello_world.yaml --harness codex --model gpt-5.4-mini
       omnigent run --server http://localhost:6767
       omnigent run examples/databricks_coding_agent.yaml --server https://<app>.databricksapps.com
+      omnigent run --project waypoint-api
     """
+    # `--project <name>`: launch within a named project. Fetch it from the
+    # server, switch to its workspace (so the session cwd and any local
+    # ``.omnigent/config.yaml`` come from there) BEFORE config is loaded, apply
+    # its defaults, and tag the session. Precedence stays flag > project >
+    # config: project values fill only what the CLI did not pass, and the
+    # config-fill below then fills anything still unset.
+    project_label: str | None = None
+    if project is not None:
+        # --project starts a FRESH session in a project; it doesn't apply to
+        # resuming/forking an existing one (nothing new to tag, and the server
+        # reuses that session's agent) nor to ephemeral runs (no persisted
+        # session to tag). Reject the combinations rather than silently changing
+        # cwd while dropping the project tag.
+        if resume is not None or resume_latest or fork_session_id is not None or ephemeral:
+            raise click.ClickException(
+                "--project starts a new session in a project; it can't be combined "
+                "with --resume, --continue, --fork, or --no-session."
+            )
+        _ctx = click.get_current_context()
+
+        def _flag_from_cli(param: str) -> bool:
+            source = _ctx.get_parameter_source(param)
+            return source is not None and source.name == "COMMANDLINE"
+
+        # Ensure a backend (spawning a local server when none is configured,
+        # exactly as a plain `run` would) so the project is reachable even on a
+        # cold start, then fetch it. Honor an explicit/configured server first.
+        _configured_server = _load_effective_config().get("server")
+        _project_server = (
+            server
+            if server is not None
+            else (str(_configured_server) if _configured_server else None)
+        )
+        _project = _fetch_project(_ensure_backend(_project_server), project)
+        project_label = project
+        # Anchor an explicit relative AGENT path to the invocation directory
+        # BEFORE switching into the project workspace, so an explicitly-typed
+        # path resolves against where the user actually ran the command.
+        if target is not None and not _is_server_url(target) and Path(target).exists():
+            target = str(Path(target).resolve())
+        _project_workspace = _project.get("workspace")
+        if isinstance(_project_workspace, str) and _project_workspace:
+            try:
+                os.chdir(_project_workspace)
+            except OSError as exc:
+                raise click.ClickException(
+                    f"Project {project!r} workspace {_project_workspace!r} is not "
+                    f"accessible on this machine ({exc}). Update it with "
+                    f"`omnigent project add {project} --workspace <dir>`."
+                ) from exc
+        _project_agent = _project.get("agent")
+        if target is None and isinstance(_project_agent, str) and _project_agent:
+            target = _project_agent
+        _project_harness = _project.get("harness")
+        if (
+            not _flag_from_cli("harness")
+            and isinstance(_project_harness, str)
+            and _project_harness
+        ):
+            harness = _project_harness
+        _project_model = _project.get("model")
+        if not _flag_from_cli("model") and isinstance(_project_model, str) and _project_model:
+            model = _project_model
+
     # Apply config defaults for any value the user did not pass explicitly.
     # Explicit CLI args always take precedence; project-local config overrides
     # global config, which provides user-level defaults.
@@ -4832,6 +4916,7 @@ def run(
         resume_parts=resume_parts,
         auto_open_conversation=auto_open_conversation,
         server_from_cli=server_from_cli,
+        project_label=project_label,
     )
 
 
@@ -6174,6 +6259,189 @@ class _ConfigGroup(click.Group):
             if hint is not None:
                 raise click.UsageError(hint)
         return super().parse_args(ctx, args)
+
+
+def _resolve_projects_server(server: str | None) -> str:
+    """Resolve the server that stores projects, or fail loud.
+
+    :param server: Explicit ``--server`` value, or ``None`` to use the
+        configured server / a running local one.
+    :returns: A normalized base URL.
+    :raises click.ClickException: When no server can be resolved.
+    """
+    base = _resolve_host_server(server) or local_server_url_if_healthy()
+    if base is None:
+        raise click.ClickException(
+            "No server specified. Pass --server <url>, set 'server' in your "
+            "config, or start one with `omnigent server start`."
+        )
+    return base.rstrip("/")
+
+
+def _fetch_project(base_url: str, name: str) -> _HostJsonObject:
+    """GET one project by name, raising a clean error on failure.
+
+    :param base_url: Resolved server base URL.
+    :param name: Project name.
+    :returns: The decoded project object.
+    :raises click.ClickException: On 404 or any transport/server failure.
+    """
+    from omnigent.claude_native_bridge import url_component
+
+    result = _host_http_json(
+        base_url=base_url, method="GET", path=f"/v1/projects/{url_component(name)}"
+    )
+    if result.status_code == 404:
+        raise click.ClickException(
+            f"No project named {name!r}. Create it with `omnigent project add {name} "
+            f"--workspace <dir>`."
+        )
+    if result.status_code != 200 or not isinstance(result.body, dict):
+        raise click.ClickException(
+            f"Couldn't load project {name!r} ({result.status_code}): "
+            f"{_host_error_text(result.body)}"
+        )
+    return result.body
+
+
+@cli.group("project")
+def project_grp() -> None:
+    """Define projects and launch sessions within them.
+
+    A project is a named workspace plus default agent/harness/model, stored
+    on your Omnigent server so it's available from any device. Launch a
+    session in a project with ``omnigent run --project <name>``.
+    """
+
+
+@project_grp.command("add")
+@click.argument("name")
+@click.option(
+    "--workspace",
+    default=None,
+    help="Project working directory (default: the current directory).",
+)
+@click.option("--agent", default=None, help="Default agent target for `run --project`.")
+@click.option("--harness", default=None, help="Default harness (claude-sdk / codex / pi / ...).")
+@click.option("--model", default=None, help="Default model id.")
+@click.option("--server", default=None, help="Server to store the project on.")
+def project_add(
+    name: str,
+    workspace: str | None,
+    agent: str | None,
+    harness: str | None,
+    model: str | None,
+    server: str | None,
+) -> None:
+    """Create or update the project named NAME.
+
+    Re-running ``add`` for an existing name replaces its definition: options
+    you don't pass reset to their defaults (workspace defaults to the current
+    directory; agent/harness/model clear), so pass every option you want kept.
+    """
+    base_url = _resolve_projects_server(server)
+    resolved_workspace = (
+        str(Path(workspace).expanduser().resolve()) if workspace else str(Path.cwd().resolve())
+    )
+    body = {
+        "name": name,
+        "workspace": resolved_workspace,
+        "agent": agent,
+        "harness": harness,
+        "model": model,
+    }
+    result = _host_http_json(
+        base_url=base_url,
+        method="POST",
+        path="/v1/projects",
+        json_body=cast(_HostJsonObject, body),
+        timeout_s=30.0,
+    )
+    if result.status_code not in (200, 201) or not isinstance(result.body, dict):
+        raise click.ClickException(
+            f"Project add failed ({result.status_code}): {_host_error_text(result.body)}"
+        )
+    click.echo(f"Saved project {name!r} (workspace: {resolved_workspace}).")
+
+
+@project_grp.command("list")
+@click.option("--server", default=None, help="Server to read projects from.")
+def project_list(server: str | None) -> None:
+    """List your projects."""
+    base_url = _resolve_projects_server(server)
+    result = _host_http_json(base_url=base_url, method="GET", path="/v1/projects")
+    if result.status_code != 200 or not isinstance(result.body, dict):
+        raise click.ClickException(
+            f"Project list failed ({result.status_code}): {_host_error_text(result.body)}"
+        )
+    data = result.body.get("data")
+    projects = data if isinstance(data, list) else []
+    if not projects:
+        click.echo(
+            "No projects yet. Create one with `omnigent project add <name> --workspace <dir>`."
+        )
+        return
+    for entry in projects:
+        if not isinstance(entry, dict):
+            continue
+        extras = [f"{key}={entry[key]}" for key in ("agent", "harness", "model") if entry.get(key)]
+        suffix = ("  " + " ".join(extras)) if extras else ""
+        click.echo(f"{entry.get('name', '')}\t{entry.get('workspace', '')}{suffix}")
+
+
+@project_grp.command("show")
+@click.argument("name")
+@click.option("--server", default=None, help="Server to read the project from.")
+def project_show(name: str, server: str | None) -> None:
+    """Show one project's definition."""
+    base_url = _resolve_projects_server(server)
+    project = _fetch_project(base_url, name)
+    for key in ("name", "workspace", "agent", "harness", "model"):
+        value = project.get(key)
+        if value:
+            click.echo(f"{key}: {value}")
+
+
+@project_grp.command("remove")
+@click.argument("name")
+@click.option("--server", default=None, help="Server to remove the project from.")
+def project_remove(name: str, server: str | None) -> None:
+    """Remove a project (does not affect its existing sessions)."""
+    from omnigent.claude_native_bridge import url_component
+
+    base_url = _resolve_projects_server(server)
+    result = _host_http_json(
+        base_url=base_url, method="DELETE", path=f"/v1/projects/{url_component(name)}"
+    )
+    if result.status_code == 404:
+        raise click.ClickException(f"No project named {name!r}.")
+    if result.status_code not in (200, 204):
+        raise click.ClickException(
+            f"Project remove failed ({result.status_code}): {_host_error_text(result.body)}"
+        )
+    click.echo(f"Removed project {name!r}.")
+
+
+@project_grp.command("sessions")
+@click.argument("name")
+@click.option("--server", default=None, help="Server to read sessions from.")
+def project_sessions(name: str, server: str | None) -> None:
+    """List sessions launched in a project."""
+    base_url = _resolve_projects_server(server)
+    pages = _fetch_session_pages(base_url=base_url, connected_only=False)
+    if pages.error is not None:
+        raise click.ClickException(pages.error)
+    matched = 0
+    for row in pages.sessions:
+        labels = row.get("labels")
+        if not isinstance(labels, dict) or labels.get("project") != name:
+            continue
+        matched += 1
+        title = row.get("title") or ""
+        status = row.get("status") or ""
+        click.echo(f"{row.get('id', '')}\t{status}\t{title}")
+    if matched == 0:
+        click.echo(f"No sessions found for project {name!r}.")
 
 
 @cli.group("config", cls=_ConfigGroup)
