@@ -540,14 +540,31 @@ class CursorExecutor(Executor):
         state.has_sent_prompt = True
         response_text = ""
         tool_calls = 0
+        # A tool call between two assistant text blocks means they are distinct
+        # narration segments (pre- vs post-tool); insert a paragraph break so
+        # they don't render as one run-on string ("...by the tool.- Exit: 2").
+        # Streamed deltas of a single response (no tool between) still
+        # concatenate seamlessly, so this never splits one sentence.
+        separate_next_text = False
         try:
             run = await state.agent.send(prompt)
             async for message in run.messages():
                 for event in _sdk_message_to_events(message):
                     if isinstance(event, TextChunk):
+                        if (
+                            separate_next_text
+                            and response_text
+                            and not response_text.endswith(("\n", " "))
+                            and not event.text.startswith(("\n", " "))
+                        ):
+                            event = TextChunk(text="\n\n" + event.text)
+                        separate_next_text = False
                         response_text += event.text
                     elif isinstance(event, ToolCallRequest):
                         tool_calls += 1
+                        separate_next_text = True
+                    elif isinstance(event, ToolCallComplete):
+                        separate_next_text = True
                     yield event
             result = await run.wait()
         except asyncio.CancelledError:

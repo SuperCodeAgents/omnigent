@@ -295,6 +295,34 @@ async def test_run_turn_streams_and_completes(monkeypatch: pytest.MonkeyPatch) -
     assert completes[0].usage is None
 
 
+async def test_run_turn_separates_text_across_a_tool_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pre-tool and post-tool narration are distinct segments: a paragraph break
+    is inserted so they don't render as one run-on string. (Streamed deltas with
+    no tool between — see the test above — still concatenate seamlessly.)"""
+    script = {
+        "messages": [
+            _assistant("Let me check that."),
+            _tool("sys_x", "t1", "running", args={}),
+            _tool("sys_x", "t1", "completed", result="ok"),
+            _assistant("Done - exit 0."),
+        ],
+        "result": "",
+    }
+    _install_fake_sdk(monkeypatch, [script])
+    executor = CursorExecutor(api_key="crsr_x")
+    try:
+        events = [e async for e in executor.run_turn([_user("hi")], [], "SYS")]
+    finally:
+        await executor.close()
+
+    texts = [e.text for e in events if isinstance(e, TextChunk)]
+    assert texts == ["Let me check that.", "\n\nDone - exit 0."]  # post-tool text separated
+    completes = [e for e in events if isinstance(e, TurnComplete)]
+    assert completes[0].response == "Let me check that.\n\nDone - exit 0."
+
+
 async def test_session_reused_across_turns(monkeypatch: pytest.MonkeyPatch) -> None:
     scripts = [
         {"messages": [_assistant("one")], "result": "one"},
