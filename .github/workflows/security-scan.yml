@@ -1,27 +1,24 @@
 name: Security Scan
 
-# The single deterministic security scan for a PR. Runs ONCE per PR (on
-# pull_request) and produces the `Security Scan` check. The per-workflow gate
-# jobs (security-gate.yml, called by ci/lint/e2e/e2e-ui/ap-web tests) do NOT
-# re-scan -- they poll THIS check and mirror its result -- so the scan work
-# happens exactly once while still gating every CI workflow.
+# The single deterministic security scan for a PR. Runs ONCE per PR and produces
+# the `Security Scan` check; the per-workflow gate jobs (security-gate.yml) don't
+# re-scan, they poll THIS check and mirror its result, so the work happens once
+# while still gating every CI workflow.
 #
-# It only STATICALLY analyses the diff/head (semgrep, grep, diff-read) and runs
-# with NO secrets on fork PRs, so it never executes untrusted code. The scanner
-# (scripts + rules) is always checked out from `main`, while the scanned code is
-# the PR head in a separate `pr/` dir, so a PR cannot edit its own scan.
+# It only STATICALLY analyses the diff/head (semgrep, grep, diff-read) with NO
+# secrets on fork PRs, so it never executes untrusted code. The scanner is always
+# checked out from `main` and the scanned code sits in a separate `pr/` dir, so a
+# PR can't edit its own scan.
 #
 # >>> CURRENTLY NON-BLOCKING (AUDIT MODE) <<<
-# GATE_BLOCKING is "false": the detectors run and surface findings as
-# annotations + a job summary, but this job always SUCCEEDS, so the pollers see
-# success and never skip downstream CI. To ENFORCE: set GATE_BLOCKING to "true"
-# -- then a finding fails this check, the pollers mirror the failure, and the
-# dependent CI jobs are skipped (no PR-code checkout / uv sync / test). This is
-# the single enforcement switch; the pollers just mirror this check.
+# GATE_BLOCKING "false": detectors run and surface findings, but this job always
+# SUCCEEDS, so the pollers proceed. Set it to "true" to ENFORCE — a finding then
+# fails this check, the pollers mirror the failure, and dependent CI is skipped.
+# This is the single enforcement switch.
 #
-# Trust tiers (see should-scan.sh): trusted (OWNER/MEMBER/COLLABORATOR) and
-# non-PR events are not scanned; returning contributors are; first-timers are
-# held by GitHub's native fork-approval gate first.
+# Trust tiers (should-scan.sh): trusted (OWNER/MEMBER/COLLABORATOR) and non-PR
+# events aren't scanned; returning contributors are; first-timers are held by
+# GitHub's native fork-approval gate first.
 
 on:
   pull_request:
@@ -40,10 +37,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      # Match CI: route uv at PyPI for the semgrep fetch.
+      # Route uv at PyPI for the semgrep fetch.
       UV_INDEX_URL: https://pypi.org/simple
-      # The single enforcement switch. "false" = audit (never blocks CI);
-      # "true" = blocking (a finding fails this check; pollers then skip CI).
+      # Enforcement switch: "false" = audit (never blocks); "true" = blocking.
       GATE_BLOCKING: "false"
     steps:
       - name: Check out scanner from main
@@ -63,7 +59,6 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
         run: |
-          # Scanner is checked out from `main` so a PR cannot edit its own scan.
           # Before this lands on main the scripts are absent there -- proceed
           # (fail-open) so the introducing PR is not bricked.
           if [ ! -f .github/scripts/security-scan/should-scan.sh ]; then
@@ -132,7 +127,7 @@ jobs:
         env:
           RULES: ${{ github.workspace }}/.github/security/semgrep-rules.yml
         run: |
-          # Scan only PR-changed files that exist in the head tree, so a
+          # Scan only PR-changed files present in the head tree, so a
           # contributor is never failed for pre-existing findings.
           : > targets.txt
           while IFS= read -r f; do
@@ -150,9 +145,9 @@ jobs:
             --metrics=off --quiet $(cat targets.txt)
 
       - name: Audit summary
-        # In audit mode the detector steps above are continue-on-error, so this
-        # surfaces what WOULD have blocked without failing the job. In blocking
-        # mode a detector failure already failed the job before reaching here.
+        # Audit mode: detectors are continue-on-error, so this surfaces what
+        # WOULD have blocked without failing the job. (Blocking mode already
+        # failed before reaching here.)
         if: ${{ always() && steps.gate.outputs.scan == 'true' }}
         run: |
           findings=0

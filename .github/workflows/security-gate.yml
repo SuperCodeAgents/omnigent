@@ -1,23 +1,16 @@
 name: Security Gate
 
-# Reusable (workflow_call) gate, called as the FIRST job of each CI workflow
-# (ci/lint/e2e/e2e-ui/ap-web tests); their real jobs declare `needs: gate`.
+# Reusable (workflow_call) gate, called as the FIRST job of each CI workflow;
+# their real jobs declare `needs: gate`. Does NOT scan — the single scan runs in
+# security-scan.yml. This poller only decides whether to let its caller proceed:
+#   - non-PR event or trusted author -> proceed immediately
+#   - untrusted PR -> wait for the `Security Scan` check on the head SHA and
+#     MIRROR its conclusion (success -> proceed; failure -> fail, skipping the
+#     dependent CI jobs).
 #
-# This job does NOT scan -- the single scan runs once in security-scan.yml and
-# produces the `Security Scan` check. This poller only decides whether to let
-# its caller proceed:
-#   - non-PR event or trusted author -> proceed immediately (no scan needed)
-#   - untrusted PR -> wait for the `Security Scan` check on the PR head SHA and
-#     MIRROR its conclusion. success -> proceed; failure -> fail, so the
-#     dependent CI jobs (needs: gate) are skipped.
-#
-# Enforcement (audit vs blocking) lives in ONE place -- GATE_BLOCKING in
-# security-scan.yml. In audit mode that scan always concludes success, so this
-# poller always proceeds; flip it to "true" and a finding fails the scan, which
-# this poller then mirrors to block dependent CI. Running the scan once instead
-# of once-per-workflow is the whole point of splitting scan from gate.
-#
-# The trust decision is read from `main` (should-scan.sh) so a PR cannot edit it.
+# Enforcement (audit vs blocking) lives in ONE place: GATE_BLOCKING in
+# security-scan.yml. Splitting scan from gate runs the scan once, not once per
+# workflow. The trust decision is read from `main` (should-scan.sh).
 
 on:
   workflow_call:
@@ -54,8 +47,7 @@ jobs:
           bash .github/scripts/security-scan/should-scan.sh
 
       - name: Wait for Security Scan result
-        # Only untrusted PRs wait; trusted authors / non-PR events already
-        # proceeded above (scan=false), so their CI is not delayed by the scan.
+        # Only untrusted PRs wait; trusted authors / non-PR events proceeded above.
         if: ${{ steps.gate.outputs.scan == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
