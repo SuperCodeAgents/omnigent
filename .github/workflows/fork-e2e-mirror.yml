@@ -1,46 +1,12 @@
 name: Fork e2e mirror
 
-# Mirrors an approved (or returning-contributor) fork PR's head commit onto a
-# trusted base-repo branch, fork-e2e/pr-N, so the e2e suite runs there as a
-# `push` event. A fork's own `pull_request` run gets no secrets; a `push` to a
-# base-repo branch does -- that's how fork e2e reaches the test gateway.
-#
-# The mirror is a pure git-ref update via the API: it never checks out or runs
-# the fork's code, so this privileged (secret-eligible) workflow never executes
-# untrusted code with secrets in scope. The fork code only runs on the
-# downstream `push` to fork-e2e/** (see e2e.yml), which is a trusted event.
-#
-# The ref is pushed with a GitHub App token, NOT the default GITHUB_TOKEN:
-# refs created/updated by GITHUB_TOKEN do not trigger workflows (GitHub
-# recursion-prevention), so the e2e `push` would never fire. Requires repo
-# variable FORK_E2E_APP_ID and secret FORK_E2E_APP_PRIVATE_KEY for an App
-# installed on this repo with contents:write.
-#
-# Gate -- .github/scripts/fork-e2e/should-mirror.sh opens when any holds:
-#   maintainer-approved  ||  returning-contributor  ||  fork-e2e/pr-N exists.
-# A maintainer's `workflow_dispatch` (PR-number input) also opens it -- the
-# explicit dispatch IS the authorization. Once the branch exists, every later
-# push re-mirrors (re-runs e2e on the new commits).
-#
-# Security scan -- before mirroring, security_scan.py statically inspects the PR
-# diff (TEXT only) for exfiltration shapes and posts a `Fork Security Scan`
-# status. The mirror is WITHHELD unless the scan is clean OR a maintainer
-# applies the `security-scan-override` label. Re-runs on every event.
-#
-# Triggers (all run the workflow + scripts from the BASE branch, so a PR cannot
-# alter the gate; the script checkout is additionally pinned to main):
-#   pull_request_target  opened/synchronize/reopened (mirror) + closed (cleanup).
-#   pull_request_review  submitted -- so a maintainer's approval mirrors a
-#                        first-time contributor WITHOUT waiting for the next
-#                        push. Whether a fork review actually receives the App
-#                        secret is uncertain, so the "Check App secret
-#                        availability" step gates everything on it: if the
-#                        secret is absent on this event, the run skips
-#                        gracefully (and the log says so) -- workflow_dispatch
-#                        or the next sync mirrors instead.
-#   workflow_dispatch    maintainer manual trigger by PR number, for re-running
-#                        the gate after an after-the-fact approval (write access
-#                        required, so maintainer-only).
+# Mirrors an approved / returning-contributor fork PR's head onto a trusted
+# fork-e2e/pr-N branch so e2e runs there as a `push` (with secrets). It's a pure
+# git-ref update via a GitHub App token (refs pushed by the default GITHUB_TOKEN
+# don't trigger workflows); it never checks out or runs fork code. Gated by
+# should-mirror.sh + the Fork Security Scan. Triggers: pull_request_target
+# (open/sync/reopen, + close cleanup), pull_request_review (approval), and
+# workflow_dispatch (maintainer manual trigger by PR number).
 #
 # leak-scan-allow: pull_request_target
 on:
@@ -54,8 +20,6 @@ on:
         description: "PR number to (re-)evaluate and mirror"
         required: true
 
-# Read-only at the top level (Scorecard Token-Permissions); write scope is on
-# the job.
 permissions:
   contents: read
 
@@ -66,13 +30,12 @@ concurrency:
 jobs:
   mirror:
     name: mirror
-    # Run for any maintainer dispatch, or any fork PR event. Same-repo PR events
-    # are ignored (they run e2e directly via `pull_request`).
+    # Maintainer dispatch, or any fork PR event (same-repo PRs run e2e directly).
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.fork }}
     permissions:
-      contents: read        # reads only; the App token below does the ref writes
-      pull-requests: read   # read author + reviews for the gate
-      statuses: write       # post the Fork Security Scan status on the head SHA
+      contents: read
+      pull-requests: read
+      statuses: write
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -82,22 +45,19 @@ jobs:
       - name: Check out gate scripts from main
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
-          ref: main             # trusted base; never the PR head
+          ref: main             # trusted; never the PR head
           sparse-checkout: .github/scripts
           persist-credentials: false
 
       - name: Check App secret availability
         id: secret
-        # pull_request_review on a fork MAY not expose secrets/vars. Gate the
-        # whole run on the App private key being present: if it's absent on this
-        # event, skip gracefully (the log records it -- this is how we verify
-        # whether review events get secrets). Only a boolean is exposed here,
-        # never the key itself.
+        # A fork pull_request_review may not carry secrets; gate the run on the
+        # App key being present (boolean only) so it skips cleanly, not fails.
         env:
           HAS_KEY: ${{ secrets.FORK_E2E_APP_PRIVATE_KEY != '' }}
         run: |
           echo "has=$HAS_KEY" >> "$GITHUB_OUTPUT"
-          echo "App secret available on this '${{ github.event_name }}' event: $HAS_KEY"
+          echo "App secret on '${{ github.event_name }}': $HAS_KEY"
 
       - name: Resolve PR context
         id: ctx
@@ -105,7 +65,6 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             PR="${{ github.event.inputs.pr }}"
-            # Fetch head SHA, association, and fork-ness from the API (no event payload).
             RESP=$(gh api "repos/$REPO/pulls/$PR" \
               --jq '[.head.sha, .author_association, (.head.repo.fork | tostring)] | @tsv')
             SHA=$(printf '%s' "$RESP" | cut -f1)
@@ -120,17 +79,14 @@ jobs:
             ACTION="${{ github.event.action }}"
           fi
           {
-            echo "pr=$PR"
-            echo "sha=$SHA"
-            echo "assoc=$ASSOC"
-            echo "fork=$FORK"
-            echo "action=$ACTION"
-            echo "branch=fork-e2e/pr-$PR"
+            echo "pr=$PR"; echo "sha=$SHA"; echo "assoc=$ASSOC"
+            echo "fork=$FORK"; echo "action=$ACTION"; echo "branch=fork-e2e/pr-$PR"
           } >> "$GITHUB_OUTPUT"
           echo "ctx: pr=$PR fork=$FORK assoc=$ASSOC action=$ACTION"
 
       - name: Mint mirror App token
         id: app-token
+        # App token, not GITHUB_TOKEN: its pushes DO trigger the downstream e2e.
         if: ${{ steps.secret.outputs.has == 'true' && steps.ctx.outputs.fork == 'true' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         with:
@@ -144,8 +100,7 @@ jobs:
           BRANCH: ${{ steps.ctx.outputs.branch }}
         run: |
           gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null 2>&1 \
-            && echo "Deleted $BRANCH" \
-            || echo "No $BRANCH to delete"
+            && echo "Deleted $BRANCH" || echo "No $BRANCH to delete"
 
       - name: Load maintainers
         id: maintainers
@@ -164,12 +119,11 @@ jobs:
 
       - name: Security scan of PR diff
         id: scan
+        # Diff TEXT only -- never checks out or runs fork code.
         if: ${{ steps.ctx.outputs.fork == 'true' && steps.ctx.outputs.action != 'closed' }}
         env:
           PR: ${{ steps.ctx.outputs.pr }}
         run: |
-          # Static analysis of the diff TEXT only -- never checks out or runs
-          # fork code. Writes clean=true|false + summary to $GITHUB_OUTPUT.
           gh pr diff "$PR" --repo "$REPO" --patch > "$RUNNER_TEMP/pr.diff"
           python3 .github/scripts/fork-e2e/security_scan.py "$RUNNER_TEMP/pr.diff"
 
@@ -189,10 +143,9 @@ jobs:
       - name: Post Fork Security Scan status
         if: ${{ steps.ctx.outputs.fork == 'true' && steps.ctx.outputs.action != 'closed' }}
         env:
-          # Fork-derived text (summary may contain PR file paths) via env + quoted.
           CLEAN: ${{ steps.scan.outputs.clean }}
           OVERRIDE: ${{ steps.override.outputs.override }}
-          SUMMARY: ${{ steps.scan.outputs.summary }}
+          SUMMARY: ${{ steps.scan.outputs.summary }}  # fork text via env, not interpolated
           SHA: ${{ steps.ctx.outputs.sha }}
         run: |
           if [[ "$CLEAN" == "true" ]]; then
@@ -205,12 +158,9 @@ jobs:
           gh api "repos/$REPO/statuses/$SHA" \
             -f state="$STATE" -f context="Fork Security Scan" \
             -f description="${DESC:0:140}" >/dev/null
-          echo "Fork Security Scan=$STATE on $SHA ($DESC)"
 
       - name: Mirror head SHA onto trusted branch
-        # Mirror when: it's a fork PR, not a close, the scan is clean (or
-        # overridden), AND the base gate opened -- where a maintainer
-        # workflow_dispatch counts as the gate opening (explicit authorization).
+        # Dispatch counts as the gate opening; the scan still gates.
         if: >-
           steps.ctx.outputs.fork == 'true'
           && steps.ctx.outputs.action != 'closed'
@@ -222,11 +172,9 @@ jobs:
           BRANCH: ${{ steps.ctx.outputs.branch }}
         run: |
           if gh api "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null 2>&1; then
-            gh api -X PATCH "repos/$REPO/git/refs/heads/$BRANCH" \
-              -f sha="$SHA" -F force=true >/dev/null
+            gh api -X PATCH "repos/$REPO/git/refs/heads/$BRANCH" -f sha="$SHA" -F force=true >/dev/null
             echo "Updated $BRANCH -> $SHA"
           else
-            gh api -X POST "repos/$REPO/git/refs" \
-              -f ref="refs/heads/$BRANCH" -f sha="$SHA" >/dev/null
+            gh api -X POST "repos/$REPO/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$SHA" >/dev/null
             echo "Created $BRANCH -> $SHA"
           fi
