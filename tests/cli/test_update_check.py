@@ -1307,6 +1307,57 @@ def test_fetch_latest_version_none_when_only_prereleases(
     assert fetch_latest_version() is None
 
 
+def test_fetch_latest_version_include_prereleases(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``include_prereleases=True`` surfaces an rc that the default hides."""
+    import httpx
+
+    from omnigent.update_check import fetch_latest_version
+
+    _clear_index_env(monkeypatch)
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        lambda *_a, **_k: _FakeResp(json_body={"versions": ["0.1.0", "0.1.1rc1"]}),
+    )
+
+    assert fetch_latest_version() == "0.1.0"  # default: stable only
+    assert fetch_latest_version(include_prereleases=True) == "0.1.1rc1"
+
+
+def test_build_upgrade_suggestion_allow_prerelease() -> None:
+    """``allow_prerelease`` appends each installer's allow-pre-releases flag."""
+
+    def _info(installer: str, vcs_url: str | None = None) -> _InstalledWheelInfo:
+        return _InstalledWheelInfo(
+            install_time_epoch=0.0,
+            installer=installer,
+            vcs_url=vcs_url,
+            commit_sha=None,
+            is_editable=False,
+            package_version="0.1.0",
+            detected_installer=installer,
+        )
+
+    # Default (no pre) is unchanged.
+    assert _build_upgrade_suggestion(_info("uv")).command == "uv tool upgrade omnigent"
+    # uv / pip registry installs get the right flag appended.
+    assert (
+        _build_upgrade_suggestion(_info("uv"), allow_prerelease=True).command
+        == "uv tool upgrade omnigent --prerelease allow"
+    )
+    assert (
+        _build_upgrade_suggestion(_info("pip"), allow_prerelease=True).command
+        == "pip install -U omnigent --pre"
+    )
+    # VCS install carries the flag too.
+    assert (
+        _build_upgrade_suggestion(
+            _info("uv", vcs_url="git+https://x/omnigent.git"), allow_prerelease=True
+        ).command
+        == "uv tool install --reinstall git+https://x/omnigent.git --prerelease allow"
+    )
+
+
 def test_fetch_latest_version_swallows_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     """Network error and non-200 both return ``None`` (never raise)."""
     import httpx

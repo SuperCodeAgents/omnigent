@@ -3376,23 +3376,33 @@ def _wait_for_local_sessions_to_drain() -> None:
     is_flag=True,
     help="Stop in-flight sessions immediately instead of waiting for them to drain.",
 )
-def upgrade(check_only: bool, force: bool) -> None:
+@click.option(
+    "--pre",
+    "pre",
+    is_flag=True,
+    help="Consider pre-releases (e.g. release candidates), and pass the "
+    "installer's allow-pre-releases flag. Useful for validating a TestPyPI rc.",
+)
+def upgrade(check_only: bool, force: bool, pre: bool) -> None:
     """Upgrade the omnigent CLI to the latest release on PyPI.
 
     Detects how omnigent was installed (uv / pip / pipx / poetry), checks
-    PyPI for a newer release and — unless ``--check`` — drains and stops
-    the local background server and host daemon, then runs the matching
-    upgrade command. The next ``omni`` invocation starts a fresh server
-    on the new code automatically (via the version-aware config
-    signature), so no explicit restart is needed.
+    the configured index for a newer release and — unless ``--check`` —
+    drains and stops the local background server and host daemon, then runs
+    the matching upgrade command. The next ``omni`` invocation starts a
+    fresh server on the new code automatically (via the version-aware
+    config signature), so no explicit restart is needed.
 
     In-flight agent sessions are waited on by default; pass ``--force`` to
-    stop them immediately. Source checkouts / editable installs are not
-    upgraded here — update those with ``git pull``.
+    stop them immediately. Pass ``--pre`` to consider pre-releases (rc /
+    beta) — handy for validating a TestPyPI candidate against your
+    configured index. Source checkouts / editable installs are not upgraded
+    here — update those with ``git pull``.
 
     :param check_only: Only report availability; do not upgrade. Exits
         with status 1 when a newer release exists.
     :param force: Stop in-flight sessions immediately rather than draining.
+    :param pre: Consider pre-releases and allow the installer to fetch them.
     :returns: None.
     """
     import importlib.metadata
@@ -3425,7 +3435,7 @@ def upgrade(check_only: bool, force: bool) -> None:
         )
 
     current = importlib.metadata.version("omnigent")
-    latest = fetch_latest_version()
+    latest = fetch_latest_version(include_prereleases=pre)
     if latest is None:
         raise click.ClickException(
             "Couldn't reach the package index to check for a newer release. Check your "
@@ -3448,7 +3458,7 @@ def upgrade(check_only: bool, force: bool) -> None:
         # dropped rather than applied — SystemExit propagates correctly.
         raise SystemExit(1)
 
-    suggestion = _build_upgrade_suggestion(info)
+    suggestion = _build_upgrade_suggestion(info, allow_prerelease=pre)
     if not suggestion.runnable:
         raise click.ClickException(
             f"No automatic upgrade command is known for this install. {suggestion.command}."

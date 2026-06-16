@@ -445,20 +445,22 @@ def _index_from_pip_config() -> str:
     return ""
 
 
-def fetch_latest_version() -> str | None:
-    """Fetch the latest stable ``omnigent`` release from the configured index.
+def fetch_latest_version(include_prereleases: bool = False) -> str | None:
+    """Fetch the latest ``omnigent`` release from the configured index.
 
     Queries the Simple Repository API of the resolved index
     (:func:`_resolve_index_url`) — PEP 691 JSON when the index serves it,
-    PEP 503 HTML otherwise. Pre-releases and dev releases are excluded so
-    we never nag about a non-final build. Network call with a tight
-    timeout, swallowing every error so the update check can never break
-    (or slow) the CLI; intended for the detached background refresh, not
-    the hot path.
+    PEP 503 HTML otherwise. Network call with a tight timeout, swallowing
+    every error so the update check can never break (or slow) the CLI;
+    intended for the detached background refresh, not the hot path.
 
-    :returns: The latest stable version string (e.g. ``"0.2.0"``), or
-        ``None`` on any network / parse error, a non-200 response, or when
-        no stable release is found.
+    :param include_prereleases: When ``False`` (default), pre-releases and
+        dev releases are excluded so we never nag about a non-final build.
+        When ``True`` (``omni upgrade --pre`` / TestPyPI rc validation),
+        they are considered too.
+    :returns: The latest matching version string (e.g. ``"0.2.0"`` or, with
+        pre-releases, ``"0.2.0rc1"``), or ``None`` on any network / parse
+        error, a non-200 response, or when no matching release is found.
     """
     import httpx
     from packaging.utils import canonicalize_name
@@ -477,8 +479,9 @@ def fetch_latest_version() -> str | None:
         return None
 
     versions = _parse_simple_versions(resp)
-    stable = [v for v in versions if not (v.is_prerelease or v.is_devrelease)]
-    return str(max(stable)) if stable else None
+    if not include_prereleases:
+        versions = [v for v in versions if not (v.is_prerelease or v.is_devrelease)]
+    return str(max(versions)) if versions else None
 
 
 def _parse_simple_versions(resp: httpx.Response) -> list[Version]:
@@ -1209,13 +1212,29 @@ class _UpgradeSuggestion:
     runnable: bool
 
 
-def _build_upgrade_suggestion(info: _InstalledWheelInfo) -> _UpgradeSuggestion:
+# Per-installer flag that allows pre-releases (``omni upgrade --pre``).
+# Only installers with a clean, well-defined flag are listed; others get
+# no suffix (the base command still runs, just stable-only).
+_PRERELEASE_FLAG = {
+    "uv": " --prerelease allow",
+    "pip": " --pre",
+    "pipx": " --pip-args=--pre",
+}
+
+
+def _build_upgrade_suggestion(
+    info: _InstalledWheelInfo, *, allow_prerelease: bool = False
+) -> _UpgradeSuggestion:
     """Build the right upgrade command for the user's install shape.
 
     Picks based on ``detected_installer`` (uv / pip / pipx / poetry /
     unknown) and whether ``direct_url.json`` recorded a VCS URL.
 
     :param info: Metadata from ``_read_installed_wheel_info``.
+    :param allow_prerelease: When ``True`` (``omni upgrade --pre``), append
+        the installer's allow-pre-releases flag (uv ``--prerelease allow``,
+        pip ``--pre``, pipx ``--pip-args=--pre``) so the upgrade can land on
+        a release candidate. A no-op for installers without a known flag.
     :returns: A :class:`_UpgradeSuggestion` whose ``command`` is the
         line printed in the nag panel and whose ``runnable`` flag
         tells the caller whether the line is an actual invocation
@@ -1223,20 +1242,21 @@ def _build_upgrade_suggestion(info: _InstalledWheelInfo) -> _UpgradeSuggestion:
         (so the prompt is suppressed).
     """
     installer = info.detected_installer or info.installer
+    pre = _PRERELEASE_FLAG.get(installer or "", "") if allow_prerelease else ""
 
     if info.vcs_url:
         # VCS install — we know the exact source URL.
         if installer == "uv":
             return _UpgradeSuggestion(
-                command=f"uv tool install --reinstall {info.vcs_url}",
+                command=f"uv tool install --reinstall {info.vcs_url}{pre}",
                 runnable=True,
             )
         if installer == "pipx":
             # pipx tracks the original spec; ``reinstall`` re-pulls it.
-            return _UpgradeSuggestion(command=f"pipx reinstall {_DIST_NAME}", runnable=True)
+            return _UpgradeSuggestion(command=f"pipx reinstall {_DIST_NAME}{pre}", runnable=True)
         if installer in ("pip", None):
             return _UpgradeSuggestion(
-                command=f"pip install --force-reinstall {info.vcs_url}",
+                command=f"pip install --force-reinstall {info.vcs_url}{pre}",
                 runnable=True,
             )
         if installer == "poetry":
@@ -1250,11 +1270,11 @@ def _build_upgrade_suggestion(info: _InstalledWheelInfo) -> _UpgradeSuggestion:
 
     # Registry install — no VCS URL recorded.
     if installer == "uv":
-        return _UpgradeSuggestion(command=f"uv tool upgrade {_DIST_NAME}", runnable=True)
+        return _UpgradeSuggestion(command=f"uv tool upgrade {_DIST_NAME}{pre}", runnable=True)
     if installer == "pipx":
-        return _UpgradeSuggestion(command=f"pipx upgrade {_DIST_NAME}", runnable=True)
+        return _UpgradeSuggestion(command=f"pipx upgrade {_DIST_NAME}{pre}", runnable=True)
     if installer == "pip":
-        return _UpgradeSuggestion(command=f"pip install -U {_DIST_NAME}", runnable=True)
+        return _UpgradeSuggestion(command=f"pip install -U {_DIST_NAME}{pre}", runnable=True)
     if installer == "poetry":
         return _UpgradeSuggestion(command=f"poetry update {_DIST_NAME}", runnable=True)
     return _UpgradeSuggestion(
